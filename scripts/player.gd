@@ -1,15 +1,20 @@
-# player.gd
+# scripts/player.gd
 extends CharacterBody3D
 
 # --- Signals ---
 signal ammo_updated(current_ammo, reserve_ammo)
 signal cash_updated(new_cash_amount)
+signal health_updated(new_health) # NEW
+signal player_died # NEW
 
 # --- Constants ---
 const PRIMARY_SLOT = 0
 const SECONDARY_SLOT = 1
+const ADS_DURATION = 0.1
 
 # --- Player Stats ---
+var health: float = 100.0 # NEW
+const MAX_HEALTH: float = 150.0 # NEW
 const STAND_SPEED = 5.0
 const CROUCH_SPEED = 2.0
 const JUMP_VELOCITY = 4.5
@@ -26,9 +31,6 @@ const BOB_FREQUENCY = 0.0
 const BOB_AMPLITUDE = 0.00
 var bob_time = 0.0
 
-# Not sure why this would be here so I set the bob to 0 like every other tac-shooter :wink:
-# If we for some reason want head vertical mvt we should probably only do it on 3d model animations (but we probably shouldn't).
-
 # --- Physics ---
 var gravity = ProjectSettings.get_setting("physics/3d/default_gravity")
 
@@ -36,6 +38,7 @@ var gravity = ProjectSettings.get_setting("physics/3d/default_gravity")
 @export var buy_menu_scene: PackedScene
 @export var hud_scene: PackedScene
 @export var bullet_scene: PackedScene
+@export var death_screen_scene: PackedScene # NEW
 
 # --- OnReady Node References ---
 @onready var collision_shape = $CollisionShape3DHead
@@ -47,10 +50,14 @@ var gravity = ProjectSettings.get_setting("physics/3d/default_gravity")
 @onready var head_attachment = $HeadAttachment
 @onready var gun_attachment = $GunAttachment
 @onready var model = $Model
+@onready var ads_camera_position = $GunAttachment/GunMount/ADSCameraPosition
 
 # --- State Variables ---
 var is_crouching = false
-var hud: Control
+var hud: CanvasLayer
+var initial_camera_transform: Transform3D
+var ads_tween: Tween
+var is_dead: bool = false # NEW
 
 # --- Decoupled Aim Variables ---
 var _target_yaw: float = 0.0
@@ -111,17 +118,21 @@ func _ready():
 		add_child(hud)
 		self.ammo_updated.connect(hud.update_ammo_display)
 		self.cash_updated.connect(hud.update_cash_display)
+		self.health_updated.connect(hud.update_health_display) # NEW
 
 	# Setup and start the buy phase
 	buy_phase_timer.wait_time = BUY_PHASE_DURATION
 	buy_phase_timer.timeout.connect(_on_buy_phase_ended)
 	buy_phase_timer.start()
 
+	initial_camera_transform = camera.transform
+
 	# Equip a free starting pistol
 	var free_pistol_data = load("res://resources/guns/pistols/Carbon-2.tres")
 	_equip_gun(free_pistol_data, SECONDARY_SLOT, true)
 	cash = 9000 # Set initial cash after getting the free pistol
 	cash_updated.emit(cash)
+	health_updated.emit(health) # NEW
 
 
 func _unhandled_input(event):
@@ -135,6 +146,11 @@ func _unhandled_input(event):
 
 	if Input.is_action_just_pressed("reload"):
 		reload()
+
+	if Input.is_action_just_pressed("aim"):
+		_toggle_ads(true)
+	if Input.is_action_just_released("aim"):
+		_toggle_ads(false)
 
 	if Input.is_action_just_pressed("open_buy_menu") and is_buy_phase:
 		toggle_buy_menu()
@@ -158,6 +174,7 @@ func _physics_process(delta):
 
 	self.rotation.y = _target_yaw
 	camera.rotation.x = _target_pitch
+
 
 	# --- CROUCHING & COLLIDER LOGIC ---
 	var crouch_delta = delta * CROUCH_LERP_SPEED
@@ -205,6 +222,24 @@ func _physics_process(delta):
 		velocity.x = move_toward(velocity.x, 0, base_speed)
 		velocity.z = move_toward(velocity.z, 0, base_speed)
 	move_and_slide()
+
+
+func _toggle_ads(is_aiming: bool):
+	if ads_tween and ads_tween.is_running():
+		ads_tween.kill()
+
+	ads_tween = create_tween()
+	ads_tween.set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_SINE)
+
+	var target_transform: Transform3D
+
+	if is_aiming and not is_reloading:
+		# Calculate the target local transform relative to the head attachment
+		target_transform = head_attachment.global_transform.affine_inverse() * ads_camera_position.global_transform
+	else:
+		target_transform = initial_camera_transform
+
+	ads_tween.tween_property(camera, "transform", target_transform, ADS_DURATION)
 
 
 func toggle_buy_menu():
@@ -294,6 +329,8 @@ func switch_gun(new_index: int):
 	if new_index == active_gun_index or not is_instance_valid(gun_inventory[new_index]):
 		return
 
+	_toggle_ads(false) # Exit ADS when switching guns
+
 	if is_instance_valid(gun_nodes[active_gun_index]):
 		gun_nodes[active_gun_index].hide()
 
@@ -339,7 +376,8 @@ func shoot():
 	bullet_instance.damage = current_gun_data.damage
 	get_tree().root.add_child(bullet_instance)
 
-	var new_transform = Transform3D(camera.global_transform.basis, spawn_point.global_position)
+	var active_camera = get_viewport().get_camera_3d()
+	var new_transform = Transform3D(active_camera.global_transform.basis, spawn_point.global_position)
 	bullet_instance.global_transform = new_transform
 
 func reload():
@@ -347,6 +385,7 @@ func reload():
 	if not current_gun_data or is_reloading or current_reserve_ammo <= 0 or current_mag_ammo == current_gun_data.mag_size:
 		return
 	is_reloading = true
+	_toggle_ads(false) # Exit ADS when reloading
 	reload_timer.wait_time = current_gun_data.reload_time
 	reload_timer.start()
 
@@ -365,3 +404,30 @@ func set_crouch_state(new_state: bool):
 	if new_state == false and head_check_raycast.is_colliding():
 		return
 	is_crouching = new_state
+
+# --- NEW FUNCTIONS ---
+func take_damage(damage_amount: float):
+	if is_dead: return
+	health -= damage_amount
+	health_updated.emit(health)
+	if health <= 0:
+		die()
+
+func die():
+	if is_dead: return
+	is_dead = true
+	player_died.emit()
+
+	# Disable player logic
+	set_physics_process(false)
+	set_process_unhandled_input(false)
+
+	# Show death screen
+	if death_screen_scene:
+		var death_screen = death_screen_scene.instantiate()
+		add_child(death_screen)
+
+	# Release mouse and hide HUD
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	if is_instance_valid(hud):
+		hud.hide()

@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="ArmorData" load_steps=2 format=3 uid="uid://cbrkn2wc5ydvw"]
+
+[ext_resource type="Script" uid="uid://dubgtgqg4x7qg" path="res://scripts/ArmorData.gd" id="1_o5qwb"]
+
+[resource]
+script = ExtResource("1_o5qwb")
+gun_name = "Shield"
+cost = 0
+health_value = 0
+metadata/_custom_type_script = "uid://dubgtgqg4x7qg"

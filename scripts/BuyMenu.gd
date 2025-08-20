@@ -4,6 +4,8 @@ extends Control
 signal gun_purchased(gun_data)
 signal gun_sold(gun_data)
 
+# signal armor_purchased(armor_data)
+
 var player_ref # Player reference will be set by the player script
 
 # Node references
@@ -59,6 +61,8 @@ func populate_guns():
 		load("res://resources/guns/pistols/Carbon-2.tres"),
 		load("res://resources/guns/pistols/Duster-6X.tres"),
 		load("res://resources/guns/pistols/Shiv.tres"),
+		load("res://resources/armor/heavy_shield.tres"),
+		load("res://resources/armor/light_shield.tres"),
 		# SMGs
 		load("res://resources/guns/smgs/Buzzsaw-40.tres"),
 		load("res://resources/guns/smgs/Hornet-25.tres"),
